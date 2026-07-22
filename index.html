@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Tesla Lyrics Sync</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Inter:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0d10;
+    --surface: #15181d;
+    --text-primary: #f5f6f7;
+    --text-muted: #6b7480;
+    --text-dim: #3a4048;
+    --accent: #00d4ff;
+    --accent-glow: rgba(0, 212, 255, 0.35);
+    --danger: #ff5252;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+    overflow: hidden;
+  }
+  #app {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- Top bar: 트랙 정보 ---------- */
+  #topbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 18px 28px;
+    border-bottom: 1px solid #1e2228;
+    flex-shrink: 0;
+  }
+  #albumArt {
+    width: 44px; height: 44px; border-radius: 6px;
+    background: var(--surface);
+    object-fit: cover;
+    flex-shrink: 0;
+  }
+  #trackMeta { min-width: 0; flex: 1; }
+  #trackTitle {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 15px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #trackArtist {
+    font-size: 12px; color: var(--text-muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #status {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 5px 10px;
+    border: 1px solid #262b32;
+    border-radius: 100px;
+    flex-shrink: 0;
+  }
+  #status.live { color: var(--accent); border-color: var(--accent); }
+
+  /* ---------- 가사 스테이지 ---------- */
+  #lyricsStage {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  #lyricsTrack {
+    position: absolute;
+    width: 100%;
+    padding: 0 40px;
+    text-align: center;
+    transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .line {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 22px;
+    font-weight: 500;
+    line-height: 1.9;
+    color: var(--text-dim);
+    transition: color 0.4s ease, font-size 0.4s ease, text-shadow 0.4s ease;
+  }
+  .line.current {
+    color: var(--text-primary);
+    font-size: 34px;
+    font-weight: 700;
+    text-shadow: 0 0 24px var(--accent-glow);
+  }
+  .line.current::before {
+    content: '';
+  }
+  .line.near {
+    color: var(--text-muted);
+    font-size: 24px;
+  }
+
+  #progressBar {
+    position: absolute;
+    bottom: 0; left: 0;
+    height: 3px;
+    background: var(--accent);
+    width: 0%;
+    box-shadow: 0 0 10px var(--accent-glow);
+    transition: width 0.1s linear;
+  }
+
+  #emptyState {
+    font-family: 'Space Grotesk', sans-serif;
+    color: var(--text-muted);
+    font-size: 15px;
+    text-align: center;
+    line-height: 1.8;
+  }
+  #emptyState button {
+    margin-top: 16px;
+    background: var(--accent);
+    color: #05141a;
+    border: none;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    padding: 12px 22px;
+    border-radius: 100px;
+    font-size: 13px;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <img id="albumArt" src="" alt="" />
+    <div id="trackMeta">
+      <div id="trackTitle">연결 대기 중</div>
+      <div id="trackArtist">—</div>
+    </div>
+    <div id="status">OFFLINE</div>
+  </div>
+
+  <div id="lyricsStage">
+    <div id="emptyState">
+      <div>스포티파이 계정을 연결하면<br/>재생 중인 곡의 가사가 여기 표시됩니다.</div>
+      <button id="connectBtn">스포티파이 연결</button>
+    </div>
+    <div id="lyricsTrack" style="display:none;"></div>
+    <div id="progressBar"></div>
+  </div>
+</div>
+
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
+<script>
+/* =========================================================
+   설정 — 본인 값으로 교체하세요
+   ========================================================= */
+const CLIENT_ID = '17f73544fbec440d88726575c4a1fc49';
+const REDIRECT_URI = window.location.origin + window.location.pathname; // Spotify Dashboard에 동일하게 등록 필요
+const SCOPES = 'streaming user-read-email user-read-private user-read-playback-state';
+
+/* =========================================================
+   1. PKCE 인증 플로우
+   ========================================================= */
+function base64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function pkceChallenge(verifier) {
+  const data = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return base64url(digest);
+}
+
+function randomVerifier(len = 64) {
+  const arr = new Uint8Array(len);
+  crypto.getRandomValues(arr);
+  return base64url(arr).slice(0, len);
+}
+
+async function startLogin() {
+  const verifier = randomVerifier();
+  sessionStorage.setItem('pkce_verifier', verifier);
+  const challenge = await pkceChallenge(verifier);
+
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    code_challenge_method: 'S256',
+    code_challenge: challenge,
+    scope: SCOPES
+  });
+  window.location.href = `https://accounts.spotify.com/authorize?${params}`;
+}
+
+async function exchangeCodeForToken(code) {
+  const verifier = sessionStorage.getItem('pkce_verifier');
+  const body = new URLSearchParams({
+    client_id: CLIENT_ID,
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: REDIRECT_URI,
+    code_verifier: verifier
+  });
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  if (!res.ok) throw new Error('토큰 교환 실패');
+  const data = await res.json();
+  localStorage.setItem('sp_access_token', data.access_token);
+  localStorage.setItem('sp_refresh_token', data.refresh_token);
+  localStorage.setItem('sp_expires_at', Date.now() + data.expires_in * 1000);
+  return data.access_token;
+}
+
+async function getValidToken() {
+  const expiresAt = Number(localStorage.getItem('sp_expires_at') || 0);
+  if (Date.now() < expiresAt - 5000) {
+    return localStorage.getItem('sp_access_token');
+  }
+  const refreshToken = localStorage.getItem('sp_refresh_token');
+  if (!refreshToken) return null;
+  const body = new URLSearchParams({
+    client_id: CLIENT_ID,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken
+  });
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  localStorage.setItem('sp_access_token', data.access_token);
+  localStorage.setItem('sp_expires_at', Date.now() + data.expires_in * 1000);
+  return data.access_token;
+}
+
+/* =========================================================
+   2. Spotify Web Playback SDK 초기화
+   ========================================================= */
+let player, currentDeviceId;
+let currentLyrics = [];   // [{time: seconds, text: string}]
+let currentTrackKey = ''; // 중복 요청 방지용
+
+window.onSpotifyWebPlaybackSDKReady = async () => {
+  const token = await getValidToken();
+  if (!token) return; // 아직 로그인 안 함
+
+  player = new Spotify.Player({
+    name: 'Tesla Lyrics Sync',
+    getOAuthToken: async cb => cb(await getValidToken()),
+    volume: 1.0
+  });
+
+  player.addListener('ready', ({ device_id }) => {
+    currentDeviceId = device_id;
+    setStatus(true);
+    // 참고: 여기서 자동으로 재생을 가져오지 않음.
+    // 폰의 스포티파이 앱에서 "기기" 목록 → "Tesla Lyrics Sync" 선택하면
+    // 이 브라우저 탭으로 재생이 넘어옵니다 (Spotify Connect).
+  });
+
+  player.addListener('not_ready', () => setStatus(false));
+
+  player.addListener('player_state_changed', state => {
+    if (!state) return;
+    const track = state.track_window.current_track;
+    updateTrackMeta(track);
+    maybeLoadLyrics(track);
+  });
+
+  player.connect();
+
+  // 재생 위치를 자체 폴링 (SDK는 초 단위 이벤트만 주므로 부드러운 스크롤용으로 별도 루프 사용)
+  setInterval(async () => {
+    if (!player) return;
+    const state = await player.getCurrentState();
+    if (state) updateLyricPosition(state.position / 1000);
+  }, 250);
+};
+
+/* =========================================================
+   3. UI 업데이트
+   ========================================================= */
+function setStatus(live) {
+  const el = document.getElementById('status');
+  el.textContent = live ? 'LIVE' : 'OFFLINE';
+  el.classList.toggle('live', live);
+}
+
+function updateTrackMeta(track) {
+  document.getElementById('trackTitle').textContent = track.name;
+  document.getElementById('trackArtist').textContent = track.artists.map(a => a.name).join(', ');
+  const art = track.album?.images?.[0]?.url;
+  if (art) document.getElementById('albumArt').src = art;
+}
+
+/* =========================================================
+   4. lrclib.net 에서 싱크 가사 가져오기
+   ========================================================= */
+async function fetchSyncedLyrics(trackName, artistName, durationSec) {
+  const params = new URLSearchParams({
+    track_name: trackName,
+    artist_name: artistName,
+    duration: Math.round(durationSec)
+  });
+  const res = await fetch(`https://lrclib.net/api/get?${params}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data.syncedLyrics) return null;
+  return parseLRC(data.syncedLyrics);
+}
+
+// LRC 포맷([mm:ss.xx]가사) 파싱
+function parseLRC(lrcText) {
+  const lines = lrcText.split('\n');
+  const result = [];
+  const timeTag = /\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]/;
+  for (const line of lines) {
+    const match = line.match(timeTag);
+    if (!match) continue;
+    const min = parseInt(match[1], 10);
+    const sec = parseInt(match[2], 10);
+    const ms = match[3] ? parseInt(match[3].padEnd(3, '0'), 10) : 0;
+    const time = min * 60 + sec + ms / 1000;
+    const text = line.replace(timeTag, '').trim();
+    result.push({ time, text: text || '♪' });
+  }
+  return result.sort((a, b) => a.time - b.time);
+}
+
+async function maybeLoadLyrics(track) {
+  const key = `${track.name}__${track.artists[0]?.name}`;
+  if (key === currentTrackKey) return;
+  currentTrackKey = key;
+
+  document.getElementById('emptyState').style.display = 'none';
+  const stage = document.getElementById('lyricsTrack');
+  stage.style.display = 'block';
+  stage.innerHTML = `<div class="line current">가사 불러오는 중…</div>`;
+
+  const durationSec = track.duration_ms / 1000;
+  const lyrics = await fetchSyncedLyrics(track.name, track.artists[0]?.name || '', durationSec);
+
+  if (!lyrics || lyrics.length === 0) {
+    stage.innerHTML = `<div class="line current">싱크 가사를 찾지 못했어요</div>`;
+    currentLyrics = [];
+    return;
+  }
+  currentLyrics = lyrics;
+  renderLyricLines(-1);
+}
+
+function renderLyricLines(activeIndex) {
+  const stage = document.getElementById('lyricsTrack');
+  stage.innerHTML = currentLyrics.map((l, i) => {
+    const cls = i === activeIndex ? 'current'
+              : Math.abs(i - activeIndex) === 1 ? 'near'
+              : '';
+    return `<div class="line ${cls}" data-i="${i}">${escapeHtml(l.text)}</div>`;
+  }).join('');
+}
+
+let lastActiveIndex = -1;
+function updateLyricPosition(posSec) {
+  if (currentLyrics.length === 0) return;
+  let idx = -1;
+  for (let i = 0; i < currentLyrics.length; i++) {
+    if (currentLyrics[i].time <= posSec) idx = i;
+    else break;
+  }
+  if (idx !== lastActiveIndex) {
+    lastActiveIndex = idx;
+    renderLyricLines(idx);
+    // 현재 줄을 화면 중앙으로 이동
+    const track = document.getElementById('lyricsTrack');
+    const activeEl = track.querySelector(`[data-i="${idx}"]`);
+    if (activeEl) {
+      const offset = activeEl.offsetTop - track.parentElement.clientHeight / 2 + activeEl.clientHeight / 2;
+      track.style.transform = `translateY(${-offset}px)`;
+    }
+  }
+
+  // 다음 줄까지의 진행률 (프로그레스 바)
+  const next = currentLyrics[idx + 1];
+  const cur = currentLyrics[idx];
+  if (cur && next) {
+    const ratio = Math.min(1, Math.max(0, (posSec - cur.time) / (next.time - cur.time)));
+    document.getElementById('progressBar').style.width = `${ratio * 100}%`;
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+/* =========================================================
+   5. 로그인 버튼 / 콜백 처리
+   ========================================================= */
+document.getElementById('connectBtn').addEventListener('click', startLogin);
+
+(async function initAuthCallback() {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get('code');
+  if (code) {
+    try {
+      await exchangeCodeForToken(code);
+      window.history.replaceState({}, '', REDIRECT_URI); // ?code= 제거
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  const token = await getValidToken();
+  if (token) {
+    document.getElementById('emptyState').innerHTML =
+      '<div>로그인 완료. 스포티파이 앱에서<br/>재생 기기를 "Tesla Lyrics Sync"로 바꿔주세요.</div>';
+  }
+})();
+</script>
+</body>
+</html>
