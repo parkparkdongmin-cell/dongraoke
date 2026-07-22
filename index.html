@@ -74,7 +74,7 @@
   :root {
     /* 테슬라 화면에서 상단이 잘리면 이 값을 늘려서 가사 전체를 아래로 내리세요.
        예: 18vh = 화면 높이의 18%만큼 아래로 이동. 30%를 원하면 30vh로 변경 */
-    --lyrics-top-offset: 40vh;
+    --lyrics-top-offset: 18vh;
   }
   #lyricsStage {
     flex: 1;
@@ -86,28 +86,30 @@
     padding-top: var(--lyrics-top-offset);
   }
   #lyricsTrack {
-    position: absolute;
     width: 100%;
+    max-width: 900px;
     padding: 0 40px;
     text-align: center;
-    transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
   }
   .line {
     font-family: 'Space Grotesk', sans-serif;
     font-size: 22px;
     font-weight: 500;
-    line-height: 1.9;
+    line-height: 1.5;
     color: var(--text-dim);
     transition: color 0.4s ease, font-size 0.4s ease, text-shadow 0.4s ease;
+    min-height: 1.5em;
   }
   .line.current {
     color: var(--text-primary);
     font-size: 34px;
     font-weight: 700;
     text-shadow: 0 0 24px var(--accent-glow);
-  }
-  .line.current::before {
-    content: '';
   }
   .line.near {
     color: var(--text-muted);
@@ -377,12 +379,15 @@ async function maybeLoadLyrics(track) {
 
 function renderLyricLines(activeIndex) {
   const stage = document.getElementById('lyricsTrack');
-  stage.innerHTML = currentLyrics.map((l, i) => {
-    const cls = i === activeIndex ? 'current'
-              : Math.abs(i - activeIndex) === 1 ? 'near'
-              : '';
-    return `<div class="line ${cls}" data-i="${i}">${escapeHtml(l.text)}</div>`;
-  }).join('');
+  const prev = currentLyrics[activeIndex - 1];
+  const cur = currentLyrics[activeIndex];
+  const next = currentLyrics[activeIndex + 1];
+
+  stage.innerHTML = `
+    <div class="line near">${prev ? escapeHtml(prev.text) : '&nbsp;'}</div>
+    <div class="line current">${cur ? escapeHtml(cur.text) : '&nbsp;'}</div>
+    <div class="line near">${next ? escapeHtml(next.text) : '&nbsp;'}</div>
+  `;
 }
 
 let lastActiveIndex = -1;
@@ -396,13 +401,6 @@ function updateLyricPosition(posSec) {
   if (idx !== lastActiveIndex) {
     lastActiveIndex = idx;
     renderLyricLines(idx);
-    // 현재 줄을 화면 중앙으로 이동
-    const track = document.getElementById('lyricsTrack');
-    const activeEl = track.querySelector(`[data-i="${idx}"]`);
-    if (activeEl) {
-      const offset = activeEl.offsetTop - track.parentElement.clientHeight / 2 + activeEl.clientHeight / 2;
-      track.style.transform = `translateY(${-offset}px)`;
-    }
   }
 
   // 다음 줄까지의 진행률 (프로그레스 바)
