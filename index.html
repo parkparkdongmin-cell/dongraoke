@@ -148,6 +148,56 @@
   #playPauseBtn { width: 56px; height: 56px; font-size: 18px; }
   #fontDownBtn, #fontUpBtn { font-family: 'Space Grotesk', sans-serif; font-weight: 700; }
 
+  /* ---------- 전체 곡 탐색바 (Seek bar) ---------- */
+  #seekBarWrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 24px 8px;
+  }
+  .seekTime {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 11px;
+    color: var(--text-muted);
+    width: 38px;
+    flex-shrink: 0;
+  }
+  #seekTimeEnd { text-align: right; }
+  #seekTrack {
+    position: relative;
+    flex: 1;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    touch-action: none;
+  }
+  #seekTrackBg {
+    position: absolute;
+    left: 0; right: 0;
+    height: 4px;
+    border-radius: 4px;
+    background: #262b32;
+  }
+  #seekFill {
+    position: absolute;
+    left: 0;
+    height: 4px;
+    border-radius: 4px;
+    background: var(--accent);
+    width: 0%;
+    box-shadow: 0 0 8px var(--accent-glow);
+  }
+  #seekHandle {
+    position: absolute;
+    left: 0%;
+    width: 14px; height: 14px;
+    border-radius: 100%;
+    background: var(--text-primary);
+    box-shadow: 0 0 6px rgba(0,0,0,0.5);
+    transform: translateX(-50%);
+  }
+
   /* ---------- 히스토리 패널 ---------- */
   #historyBtn {
     background: none;
@@ -252,6 +302,16 @@
       <h3>최근 재생</h3>
       <div id="historyList"></div>
     </div>
+  </div>
+
+  <div id="seekBarWrap">
+    <span class="seekTime" id="seekTimeNow">0:00</span>
+    <div id="seekTrack">
+      <div id="seekTrackBg"></div>
+      <div id="seekFill"></div>
+      <div id="seekHandle"></div>
+    </div>
+    <span class="seekTime" id="seekTimeEnd">0:00</span>
   </div>
 
   <div id="controls">
@@ -360,6 +420,8 @@ async function getValidToken() {
 let player, currentDeviceId;
 let currentLyrics = [];   // [{time: seconds, text: string}]
 let currentTrackKey = ''; // 중복 요청 방지용
+let trackDurationMs = 0;
+let isSeeking = false;
 
 window.onSpotifyWebPlaybackSDKReady = async () => {
   const token = await getValidToken();
@@ -387,20 +449,26 @@ window.onSpotifyWebPlaybackSDKReady = async () => {
     const track = state.track_window.current_track;
     updateTrackMeta(track);
     maybeLoadLyrics(track);
+    isPausedLocal = state.paused;
+    trackDurationMs = track.duration_ms;
+    document.getElementById('seekTimeEnd').textContent = formatTime(trackDurationMs / 1000);
     document.getElementById('playPauseBtn').textContent = state.paused ? '▶' : '❚❚';
   });
 
   player.connect();
 
-  document.getElementById('playPauseBtn').addEventListener('click', () => player?.togglePlay());
-  document.getElementById('nextTrackBtn').addEventListener('click', () => player?.nextTrack());
-  document.getElementById('prevTrackBtn').addEventListener('click', () => player?.previousTrack());
+  document.getElementById('playPauseBtn').addEventListener('click', () => controlPlayback());
+  document.getElementById('nextTrackBtn').addEventListener('click', () => controlPlayback('next'));
+  document.getElementById('prevTrackBtn').addEventListener('click', () => controlPlayback('previous'));
 
   // 재생 위치를 자체 폴링 (SDK는 초 단위 이벤트만 주므로 부드러운 스크롤용으로 별도 루프 사용)
   setInterval(async () => {
     if (!player) return;
     const state = await player.getCurrentState();
-    if (state) updateLyricPosition(state.position / 1000);
+    if (state) {
+      updateLyricPosition(state.position / 1000);
+      if (!isSeeking) updateSeekBarUI(state.position, trackDurationMs);
+    }
   }, 250);
 };
 
@@ -467,6 +535,39 @@ async function playTrackByUri(uri) {
     body: JSON.stringify({ uris: [uri] })
   });
   document.getElementById('historyPanel').classList.remove('open');
+}
+
+let isPausedLocal = true;
+
+async function controlPlayback(action) {
+  const token = await getValidToken();
+  if (!token || !currentDeviceId) {
+    console.warn('재생 제어 실패: 토큰 또는 device_id 없음');
+    return;
+  }
+  let url, method;
+  if (action === 'next') {
+    url = `https://api.spotify.com/v1/me/player/next?device_id=${currentDeviceId}`;
+    method = 'POST';
+  } else if (action === 'previous') {
+    url = `https://api.spotify.com/v1/me/player/previous?device_id=${currentDeviceId}`;
+    method = 'POST';
+  } else {
+    // 재생/일시정지 토글
+    url = `https://api.spotify.com/v1/me/player/${isPausedLocal ? 'play' : 'pause'}?device_id=${currentDeviceId}`;
+    method = 'PUT';
+  }
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok && res.status !== 204) {
+      console.error('재생 제어 요청 실패:', res.status, await res.text());
+    }
+  } catch (e) {
+    console.error('재생 제어 네트워크 오류:', e);
+  }
 }
 
 document.getElementById('historyBtn').addEventListener('click', () => {
@@ -629,6 +730,71 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+/* =========================================================
+   6. 전체 곡 탐색바 (Seek bar)
+   ========================================================= */
+function formatTime(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function updateSeekBarUI(posMs, durMs) {
+  const ratio = durMs > 0 ? Math.min(1, Math.max(0, posMs / durMs)) : 0;
+  document.getElementById('seekFill').style.width = `${ratio * 100}%`;
+  document.getElementById('seekHandle').style.left = `${ratio * 100}%`;
+  document.getElementById('seekTimeNow').textContent = formatTime(posMs / 1000);
+}
+
+async function seekTo(ms) {
+  const token = await getValidToken();
+  if (!token || !currentDeviceId) return;
+  try {
+    await fetch(`https://api.spotify.com/v1/me/player/seek?position_ms=${Math.round(ms)}&device_id=${currentDeviceId}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+  } catch (e) {
+    console.error('탐색(seek) 실패:', e);
+  }
+}
+
+function ratioFromPointerEvent(e) {
+  const track = document.getElementById('seekTrack');
+  const rect = track.getBoundingClientRect();
+  const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+  return Math.min(1, Math.max(0, x / rect.width));
+}
+
+(function initSeekBarDrag() {
+  const track = document.getElementById('seekTrack');
+
+  function onDown(e) {
+    if (!trackDurationMs) return;
+    isSeeking = true;
+    const ratio = ratioFromPointerEvent(e);
+    updateSeekBarUI(ratio * trackDurationMs, trackDurationMs);
+    track.setPointerCapture?.(e.pointerId);
+  }
+  function onMove(e) {
+    if (!isSeeking) return;
+    const ratio = ratioFromPointerEvent(e);
+    updateSeekBarUI(ratio * trackDurationMs, trackDurationMs);
+  }
+  function onUp(e) {
+    if (!isSeeking) return;
+    const ratio = ratioFromPointerEvent(e);
+    isSeeking = false;
+    seekTo(ratio * trackDurationMs);
+  }
+
+  track.addEventListener('pointerdown', onDown);
+  track.addEventListener('pointermove', onMove);
+  track.addEventListener('pointerup', onUp);
+  track.addEventListener('pointercancel', () => { isSeeking = false; });
+})();
 
 /* =========================================================
    5. 로그인 버튼 / 콜백 처리
