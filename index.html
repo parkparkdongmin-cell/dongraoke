@@ -29,7 +29,20 @@
     height: 100vh;
     display: flex;
     flex-direction: column;
+    position: relative;
   }
+
+  #bgBlur {
+    position: absolute;
+    top: -10%; left: -10%;
+    width: 120%; height: 120%;
+    object-fit: cover;
+    filter: blur(50px) brightness(0.35) saturate(1.3);
+    z-index: 0;
+    transition: opacity 0.6s ease;
+    opacity: 0;
+  }
+  #bgBlur.visible { opacity: 1; }
 
   /* ---------- Top bar: 트랙 정보 ---------- */
   #topbar {
@@ -39,6 +52,8 @@
     padding: 18px 28px;
     border-bottom: 1px solid #1e2228;
     flex-shrink: 0;
+    position: relative;
+    z-index: 1;
   }
   #albumArt {
     width: 44px; height: 44px; border-radius: 6px;
@@ -75,6 +90,8 @@
     /* 테슬라 화면에서 상단이 잘리면 이 값을 늘려서 가사 전체를 아래로 내리세요.
        예: 18vh = 화면 높이의 18%만큼 아래로 이동. 30%를 원하면 30vh로 변경 */
     --lyrics-top-offset: 18vh;
+    /* 현재 줄을 화면 중앙보다 얼마나 위로 올릴지 (음수면 위로 이동, 아래 줄이 더 많이 보임) */
+    --lyrics-vertical-shift: -9vh;
   }
   #lyricsStage {
     flex: 1;
@@ -84,6 +101,7 @@
     justify-content: center;
     overflow: hidden;
     padding-top: var(--lyrics-top-offset);
+    z-index: 1;
   }
   #lyricsTrack {
     width: 100%;
@@ -94,7 +112,10 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 22px;
+    gap: 18px;
+    transform: translateY(var(--lyrics-vertical-shift));
+    position: relative;
+    z-index: 2;
   }
   .line {
     font-family: 'Space Grotesk', sans-serif;
@@ -104,7 +125,10 @@
     color: var(--text-dim);
     transition: color 0.4s ease, font-size 0.4s ease, text-shadow 0.4s ease;
     min-height: 1.5em;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
   }
+  .line:active { opacity: 0.6; }
   .line.current {
     color: var(--text-primary);
     font-size: calc(34px * var(--lyric-scale, 1));
@@ -114,6 +138,10 @@
   .line.near {
     color: var(--text-muted);
     font-size: calc(24px * var(--lyric-scale, 1));
+  }
+  .line.far {
+    color: var(--text-dim);
+    font-size: calc(19px * var(--lyric-scale, 1));
   }
 
   #progressBar {
@@ -134,6 +162,8 @@
     padding: 14px;
     border-top: 1px solid #1e2228;
     flex-shrink: 0;
+    position: relative;
+    z-index: 1;
   }
   #controls button {
     background: none;
@@ -154,6 +184,8 @@
     align-items: center;
     gap: 10px;
     padding: 0 24px 8px;
+    position: relative;
+    z-index: 1;
   }
   .seekTime {
     font-family: 'Space Grotesk', sans-serif;
@@ -245,6 +277,8 @@
   .historyItem .hTitle { font-size: 13px; font-weight: 500; }
   .historyItem .hArtist { font-size: 11px; color: var(--text-muted); }
 
+  #queueSection { margin-top: 22px; }
+
   /* ---------- 가사 없을 때 앨범아트 폴백 ---------- */
   #albumFallback {
     display: none;
@@ -280,6 +314,7 @@
 <body>
 
 <div id="app">
+  <img id="bgBlur" src="" alt="" />
   <div id="topbar">
     <img id="albumArt" src="" alt="" />
     <div id="trackMeta">
@@ -301,6 +336,10 @@
     <div id="historyPanel">
       <h3>최근 재생</h3>
       <div id="historyList"></div>
+      <div id="queueSection">
+        <h3>다음 재생 예정</h3>
+        <div id="queueList"></div>
+      </div>
     </div>
   </div>
 
@@ -490,9 +529,49 @@ function updateTrackMeta(track) {
   if (art) {
     document.getElementById('albumArt').src = art;
     document.getElementById('albumFallback').src = art;
+    const bg = document.getElementById('bgBlur');
+    bg.src = art;
+    bg.classList.add('visible');
     extractThemeColor(art);
   }
   addToHistory(track, art);
+  fetchQueue();
+}
+
+/* ---------- 다음 재생 예정 (Spotify 대기열) ---------- */
+async function fetchQueue() {
+  const token = await getValidToken();
+  if (!token) return;
+  try {
+    const res = await fetch('https://api.spotify.com/v1/me/player/queue', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderQueue((data.queue || []).slice(0, 6));
+  } catch (e) {
+    console.warn('대기열 조회 실패:', e);
+  }
+}
+
+function renderQueue(tracks) {
+  const list = document.getElementById('queueList');
+  if (!tracks.length) {
+    list.innerHTML = `<div style="font-size:12px;color:var(--text-muted);">대기열이 비어있어요</div>`;
+    return;
+  }
+  list.innerHTML = tracks.map(t => `
+    <div class="historyItem" data-uri="${t.uri}">
+      <img src="${t.album?.images?.[0]?.url || ''}" />
+      <div>
+        <div class="hTitle">${escapeHtml(t.name)}</div>
+        <div class="hArtist">${escapeHtml(t.artists.map(a => a.name).join(', '))}</div>
+      </div>
+    </div>
+  `).join('');
+  list.querySelectorAll('.historyItem').forEach(el => {
+    el.addEventListener('click', () => playTrackByUri(el.dataset.uri));
+  });
 }
 
 function addToHistory(track, art) {
@@ -692,16 +771,27 @@ async function maybeLoadLyrics(track) {
 
 function renderLyricLines(activeIndex) {
   const stage = document.getElementById('lyricsTrack');
-  const prev = currentLyrics[activeIndex - 1];
-  const cur = currentLyrics[activeIndex];
-  const next = currentLyrics[activeIndex + 1];
-
-  stage.innerHTML = `
-    <div class="line near">${prev ? escapeHtml(prev.text) : '&nbsp;'}</div>
-    <div class="line current">${cur ? escapeHtml(cur.text) : '&nbsp;'}</div>
-    <div class="line near">${next ? escapeHtml(next.text) : '&nbsp;'}</div>
-  `;
+  // 이전 1줄 + 현재 + 다음 3줄, 총 5줄을 항상 고정된 자리에 표시
+  const offsets = [-1, 0, 1, 2, 3];
+  stage.innerHTML = offsets.map(off => {
+    const i = activeIndex + off;
+    const item = currentLyrics[i];
+    let cls = 'far';
+    if (off === 0) cls = 'current';
+    else if (off === -1 || off === 1) cls = 'near';
+    const time = item ? item.time : '';
+    return `<div class="line ${cls}" data-time="${time}">${item ? escapeHtml(item.text) : '&nbsp;'}</div>`;
+  }).join('');
 }
+
+function seekToLyricLine(e) {
+  const el = e.target.closest('.line[data-time]');
+  if (!el || el.dataset.time === '') return;
+  const timeSec = parseFloat(el.dataset.time);
+  if (isNaN(timeSec)) return;
+  seekTo(timeSec * 1000);
+}
+document.getElementById('lyricsTrack').addEventListener('click', seekToLyricLine);
 
 let lastActiveIndex = -1;
 function updateLyricPosition(posSec) {
